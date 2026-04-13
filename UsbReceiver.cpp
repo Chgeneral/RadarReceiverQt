@@ -94,6 +94,8 @@ void UsbReceiver::closeUsbDevice()
 
 void UsbReceiver::run()
 {
+    emit usbError("run()函数已进入");
+
     if (m_frameSize<=0)
     {
         emit usbError("帧大小未设置或无效");
@@ -122,9 +124,18 @@ void UsbReceiver::run()
 
         // 完全参照参考代码
         UCHAR* inContext = m_bulkInEp->BeginDataXfer(inBuf, bufSize, &inOvLap);
-        m_bulkInEp->WaitForXfer(&inOvLap, 2000);
-        m_bulkInEp->FinishDataXfer(inBuf, inLen, &inOvLap, inContext);
 
+        bool waitOk = m_bulkInEp->WaitForXfer(&inOvLap, 2000);  // 保存返回值
+
+        if (!waitOk) {
+            m_bulkInEp->Abort();
+            CloseHandle(inOvLap.hEvent);
+            emit usbError("WaitForXfer超时，设备无数据");  // 超时会打印这条
+            if (!m_running) break;
+            continue;
+        }
+
+        m_bulkInEp->FinishDataXfer(inBuf, inLen, &inOvLap, inContext);
         CloseHandle(inOvLap.hEvent);
 
         if (!m_running) break;

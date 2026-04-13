@@ -1,6 +1,10 @@
 #ifndef VITAL_SIGNS_DETECTOR_H
 #define VITAL_SIGNS_DETECTOR_H
 
+#ifdef complex
+#undef complex
+#endif
+
 #include <vector>
 #include <complex>
 #include <QObject>

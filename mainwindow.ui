@@ -470,9 +470,9 @@
       <property name="geometry">
        <rect>
         <x>20</x>
-        <y>280</y>
-        <width>201</width>
-        <height>311</height>
+        <y>290</y>
+        <width>231</width>
+        <height>301</height>
        </rect>
       </property>
       <property name="title">
@@ -483,7 +483,7 @@
         <rect>
          <x>10</x>
          <y>30</y>
-         <width>181</width>
+         <width>211</width>
          <height>271</height>
         </rect>
        </property>
@@ -526,22 +526,153 @@
       <property name="geometry">
        <rect>
         <x>230</x>
-        <y>10</y>
+        <y>0</y>
         <width>581</width>
-        <height>271</height>
+        <height>281</height>
        </rect>
       </property>
       <property name="title">
-       <string>标签</string>
+       <string>摄像头</string>
       </property>
+      <widget class="QWidget" name="gridLayoutWidget_3">
+       <property name="geometry">
+        <rect>
+         <x>10</x>
+         <y>30</y>
+         <width>188</width>
+         <height>241</height>
+        </rect>
+       </property>
+       <layout class="QGridLayout" name="gridLayout_3">
+        <item row="4" column="1">
+         <widget class="QLineEdit" name="lineEdit_Freq"/>
+        </item>
+        <item row="3" column="2">
+         <spacer name="horizontalSpacer_2">
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>40</width>
+            <height>20</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item row="2" column="0">
+         <widget class="QPushButton" name="btnCameraSave">
+          <property name="text">
+           <string>保存录像</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QPushButton" name="btnCameraDisconnect">
+          <property name="text">
+           <string>关闭摄像头</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="0">
+         <widget class="QLabel" name="label_freq">
+          <property name="text">
+           <string>采样率（Hz）：</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QComboBox" name="cmbCamera"/>
+        </item>
+        <item row="6" column="1">
+         <widget class="QPushButton" name="btnSelectRR">
+          <property name="text">
+           <string>框选呼吸</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QPushButton" name="btnCameraConnect">
+          <property name="text">
+           <string>打开摄像头</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="1">
+         <widget class="QPushButton" name="btnCloseCV">
+          <property name="text">
+           <string>关闭数字识别</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="0">
+         <widget class="QPushButton" name="btnOpenCV">
+          <property name="text">
+           <string>打开数字识别</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QPushButton" name="btnCameraRefresh">
+          <property name="text">
+           <string>刷新</string>
+          </property>
+         </widget>
+        </item>
+        <item row="6" column="0">
+         <widget class="QPushButton" name="btnSelectHR">
+          <property name="text">
+           <string>框选心率</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="0">
+         <widget class="QLabel" name="label">
+          <property name="text">
+           <string>相机连接</string>
+          </property>
+         </widget>
+        </item>
+        <item row="7" column="0">
+         <widget class="QPushButton" name="btnClearRect">
+          <property name="text">
+           <string>清除框选</string>
+          </property>
+         </widget>
+        </item>
+        <item row="7" column="1">
+         <widget class="QPushButton" name="btnSaveLabel">
+          <property name="text">
+           <string>保存标签数据</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+      <widget class="CameraLabel" name="labelCamera">
+       <property name="geometry">
+        <rect>
+         <x>210</x>
+         <y>30</y>
+         <width>361</width>
+         <height>241</height>
+        </rect>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">border: 2px solid gray;</string>
+       </property>
+       <property name="text">
+        <string>摄像头未连接</string>
+       </property>
+      </widget>
      </widget>
      <widget class="QGroupBox" name="groupBox_4">
       <property name="geometry">
        <rect>
-        <x>230</x>
-        <y>280</y>
-        <width>581</width>
-        <height>311</height>
+        <x>260</x>
+        <y>290</y>
+        <width>551</width>
+        <height>301</height>
        </rect>
       </property>
       <property name="title">
@@ -569,6 +700,11 @@
    <extends>QWidget</extends>
    <header>QtCharts/QChartView</header>
    <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>CameraLabel</class>
+   <extends>QLabel</extends>
+   <header>cameralabel.h</header>
   </customwidget>
  </customwidgets>
  <resources/>

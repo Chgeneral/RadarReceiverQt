@@ -1,6 +1,17 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+// 必须在所有Qt和Windows头文件之前定义
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#undef min
+#undef max
+
+#ifdef interface
+#undef interface
+#endif
+
 #include <QMainWindow>
 #include <QSerialPort>
 #include <QSerialPortInfo>
@@ -12,12 +23,25 @@
 #include <QtCharts/QScatterSeries>
 #include <QtCharts/QValueAxis>
 #include "radar_processor.h"
-#include "vital_signs_detector.h"
+//#include "vital_signs_detector.h"
 #include <QLCDNumber>
 #include <QTimer>
 #include "UsbReceiver.h"
+#include <QCamera>
+#include <QMediaDevices>
+#include <QMediaCaptureSession>
+#include <QVideoSink>
+#include <QVideoFrame>
+#include <QPixmap>
+#include <QFile>
+#include <QMediaRecorder>
+#include <QTextStream>
+#include <QRegularExpression>
 
-
+// 前向声明，避免冲突
+class CameraLabel;
+class OcrWrapper;
+class VitalSignsDetector;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -32,6 +56,14 @@ class QLabel;
 class QCheckBox;
 class QSpinBox;
 
+//识别结果结构体
+struct MonitorData
+{
+    QString heartRate;
+    QString respRate;
+    QDateTime timestamp;
+};
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -41,6 +73,7 @@ public:
     ~MainWindow() override;
 
 private slots:
+    //串口相关
     void onRefreshPorts();
     void onOpenPort();
     void onClosePort();
@@ -63,6 +96,22 @@ private slots:
     void onReadDataUSB();
     void onSaveDataUSB();
 
+    /*摄像头处理*/
+    void onCameraConnect();
+    void onCameraDisconnect();
+    void onCameraFrameReady(const QVideoFrame& frame);
+    void onCameraRefresh();
+    void onCameraSave();
+
+    //数字识别
+    void onOpenCV();
+    void onCloseCV();
+    void onSaveLabel();
+    void onOcrTimerTimeout();
+    void onSelectHRRect();   // 框选心率区域
+    void onSelectRRRect();   // 框选呼吸率区域
+    void onClearRects();     // 清除所有框选
+
 private:
     void setupConnections();
     void updatePortList();
@@ -81,8 +130,7 @@ private:
     void setupVitalSignUI();
     void processVitalSigns();
 
-    // 2) 抽帧函数
-    bool tryTakeOneFrame(QByteArray& frame);
+    // 帧函数
     void handleOneFrame(const QByteArray& frame);
 
     static constexpr int kMaxRxBufferBytes = 2 * 1024 * 1024;
@@ -98,6 +146,12 @@ private:
     void updatePortListUSB();
     void appendLogUSB(const QString &text);
     bool tryTakeOneFrame60(QByteArray& frame);
+
+    /*摄像头函数*/
+    void updateCameraList();
+    QString recognizeROI(const QImage& roi);
+    void processMonitorFrame(const QImage& frame);
+
 
 private:
     std::unique_ptr<Ui::MainWindow> ui;
@@ -140,14 +194,20 @@ private:
     QString m_saveDir;       // 保存目录，onATStart时确定
     int     m_savedFrameCount = 0;  // 已保存帧数
     QDateTime m_collectStartTime;   // 记录采集开始时间
+    QTimer* m_statusTimer = nullptr;  // 状态更新定时器
+
+    /*图像识别*/
+    QCamera* m_camera =nullptr;
+    QMediaCaptureSession* m_captureSession = nullptr;
+    QVideoSink* m_videoSink = nullptr;
+    QMediaRecorder*       m_mediaRecorder   = nullptr;
+    QTimer*               m_ocrTimer        = nullptr;
+    bool                  m_ocrEnabled      = false;
+    bool                  m_ocrCollecting   = false;
+    QImage                m_currentFrame;
+    QList<MonitorData>    m_monitorDataList;
+    OcrWrapper* m_ocr     = nullptr;
 
 };
-
-// class RadarDataDeleter {
-// public:
-//     void operator()(RadarDataProcessor::RadarData *radar) const {
-//         if (radar) dataProcessor->free_radar_data(radar);
-//     }
-// };
 
 #endif // MAINWINDOW_H

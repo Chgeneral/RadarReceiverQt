@@ -1,3 +1,11 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#undef min
+#undef max
+
+#include "CameraLabel.h"
+#include "OcrWrapper.h"
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "radar_processor.h"
@@ -19,6 +27,8 @@
 #include <QLabel>
 #include <cmath>
 #include <QDebug>
+#include <QLabel>
+#include <QUrl>
 
 
 #define _USE_MATH_DEFINES
@@ -58,11 +68,44 @@ MainWindow::MainWindow(QWidget *parent)
     updatePortList();
     setupCharts();
     setupVitalSignUI();
-
     updatePortListUSB();
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow()
+{
+    // 释放OCR引擎
+    if (m_ocr) {
+        delete m_ocr;
+        m_ocr = nullptr;
+    }
+
+    // 释放摄像头
+    if (m_camera) {
+        m_camera->stop();
+        delete m_camera;
+        m_camera = nullptr;
+    }
+    if (m_captureSession) {
+        delete m_captureSession;
+        m_captureSession = nullptr;
+    }
+    if (m_videoSink) {
+        delete m_videoSink;
+        m_videoSink = nullptr;
+    }
+    if (m_mediaRecorder) {
+        delete m_mediaRecorder;
+        m_mediaRecorder = nullptr;
+    }
+
+    // 释放USB接收线程
+    if (m_usbReceiver) {
+        m_usbReceiver->stop();
+        m_usbReceiver->wait(3000);
+        delete m_usbReceiver;
+        m_usbReceiver = nullptr;
+    }
+}
 
 static inline quint32 readBE32(const uchar* p) {
     return (quint32(p[0]) << 24) | (quint32(p[1]) << 16) | (quint32(p[2]) << 8) | quint32(p[3]);
@@ -132,7 +175,64 @@ void MainWindow::setupConnections()
     //接收连接
     connect(serialPortUSB.get(),&QSerialPort::readyRead,this,&MainWindow::onReadDataUSB);
 
+    //摄像头连接
+    connect(ui->btnCameraConnect,&QPushButton::clicked,this,&MainWindow::onCameraConnect);
+    connect(ui->btnCameraDisconnect,&QPushButton::clicked,this,&MainWindow::onCameraDisconnect);
+    connect(ui->btnCameraRefresh, &QPushButton::clicked, this, &MainWindow::onCameraRefresh);
+    connect(ui->btnCameraSave,       &QPushButton::clicked, this, &MainWindow::onCameraSave);
+    connect(ui->btnOpenCV,           &QPushButton::clicked, this, &MainWindow::onOpenCV);
+    connect(ui->btnCloseCV,          &QPushButton::clicked, this, &MainWindow::onCloseCV);
+    connect(ui->btnSaveLabel,        &QPushButton::clicked, this, &MainWindow::onSaveLabel);
 
+    //初始化框选连接
+    connect(ui->btnSelectHR,   &QPushButton::clicked, this, &MainWindow::onSelectHRRect);
+    connect(ui->btnSelectRR,   &QPushButton::clicked, this, &MainWindow::onSelectRRRect);
+    connect(ui->btnClearRect,  &QPushButton::clicked, this, &MainWindow::onClearRects);
+
+    //初始化相机及按键
+    updateCameraList();
+    ui->btnCameraDisconnect->setEnabled(false);
+    ui->btnCloseCV->setEnabled(false);
+    ui->btnCameraSave->setEnabled(false);
+
+    //初始化TesseracOCR
+    m_ocr = new OcrWrapper();
+    if (!m_ocr->init("C:/Tesseract/tesseract.exe", "eng")) {
+        appendLogUSB("[错误] Tesseract OCR初始化失败，请检查tessdata路径");
+        delete m_ocr;
+        m_ocr = nullptr;
+    } else {
+        appendLogUSB("OCR引擎初始化成功");
+    }
+
+    //初始化OCR定时器
+    m_ocrTimer = new QTimer(this);
+    connect(m_ocrTimer, &QTimer::timeout, this, &MainWindow::onOcrTimerTimeout);
+
+    //初始化框选
+    connect(ui->labelCamera, &CameraLabel::hrRectChanged,
+            this, [this](const QRect& rect) {
+                appendLogUSB(QString("心率区域已框选: (%1,%2,%3,%4)")
+                                 .arg(rect.x()).arg(rect.y())
+                                 .arg(rect.width()).arg(rect.height()));
+            });
+    connect(ui->labelCamera, &CameraLabel::rrRectChanged,
+            this, [this](const QRect& rect) {
+                appendLogUSB(QString("呼吸率区域已框选: (%1,%2,%3,%4)")
+                                 .arg(rect.x()).arg(rect.y())
+                                 .arg(rect.width()).arg(rect.height()));
+            });
+
+    //初始化计时器
+    m_statusTimer = new QTimer(this);
+    connect(m_statusTimer, &QTimer::timeout, this, [this]() {
+        if (m_collectStartTime.isValid()) {
+            int elapsed = m_collectStartTime.secsTo(QDateTime::currentDateTime());
+            ui->lblStatusUSB->setText(QString("接收时长: %1 秒 | 接收帧数: %2 帧")
+                                          .arg(elapsed)
+                                          .arg(m_savedFrameCount));
+        }
+    });
 }
 
 void MainWindow::updatePortList()
@@ -164,6 +264,21 @@ void MainWindow::updatePortListUSB()
     }
 }
 
+void MainWindow::updateCameraList()
+{
+    ui->cmbCamera->clear();
+    const QList<QCameraDevice> cameras = QMediaDevices::videoInputs();
+    if (cameras.isEmpty()) {
+        ui->cmbCamera->addItem("无可用摄像头");
+        ui->btnCameraConnect->setEnabled(false);
+        return;
+    }
+    for (const QCameraDevice& cam : cameras) {
+        ui->cmbCamera->addItem(cam.description());
+    }
+    ui->btnCameraConnect->setEnabled(true);
+}
+
 void MainWindow::onRefreshPorts()
 {
     updatePortList();
@@ -174,6 +289,17 @@ void MainWindow::onRefreshPortsUSB()
 {
     updatePortListUSB();
     appendLogUSB("已刷新USB串口列表");
+}
+
+void MainWindow::onCameraRefresh()
+{
+    // 如果摄像头正在运行先断开
+    if (m_camera && m_camera->isActive()) {
+        onCameraDisconnect();
+    }
+
+    updateCameraList();
+    appendLogUSB("摄像头列表已刷新");
 }
 
 void MainWindow::onOpenPort()
@@ -348,7 +474,7 @@ void MainWindow::onATStart()
 
     //延迟等待复位
     QEventLoop loop;
-    QTimer::singleShot(500, &loop, &QEventLoop::quit);
+    QTimer::singleShot(1000, &loop, &QEventLoop::quit);
     loop.exec();
 
     QString cmd = "AT+START\n";
@@ -360,6 +486,11 @@ void MainWindow::onATStart()
     } else {
         appendLogUSB("AT+START 指令发送失败");
     }
+
+    // 等待设备启动发送
+    QEventLoop loop2;
+    QTimer::singleShot(200, &loop2, &QEventLoop::quit);
+    loop2.exec();
 
     ui->btnATStart->setEnabled(false);
     ui->btnATReset->setEnabled(true);
@@ -380,7 +511,7 @@ void MainWindow::onATStart()
     connect(m_usbReceiver, &UsbReceiver::usbDataReceived,
             this, [this](int frameIndex) {
 
-        m_savedFrameCount++;
+        m_savedFrameCount = frameIndex + 1;
         appendLogUSB(QString("已保存第 %1 帧").arg(frameIndex));
 
             });
@@ -393,7 +524,27 @@ void MainWindow::onATStart()
             });
 
     m_usbReceiver->start();
+
+    // 重置状态栏
+    ui->lblStatusUSB->setText("接收时长: 0 秒 | 接收帧数: 0 帧");
+
+    // 启动状态更新定时器，每秒刷新一次
+    m_statusTimer->start(1000);
+
     appendLogUSB(QString("USB接收线程已启动，数据保存至: %1").arg(m_saveDir));
+
+    // 同时时启动OCR采集
+    if (m_ocrEnabled)
+    {
+        bool freqOk;
+        double freq = ui->lineEdit_Freq->text().toDouble(&freqOk);
+        if (!freqOk || freq <= 0) freq = 1.0;
+        int intervalMs = static_cast<int>(1000.0 / freq);
+        m_ocrCollecting = true;
+        m_monitorDataList.clear();
+        m_ocrTimer->start(intervalMs);
+        appendLogUSB(QString("OCR采集已启动，采样率: %1 Hz").arg(freq));
+    }
 }
 
 void MainWindow::onATReset()
@@ -402,6 +553,25 @@ void MainWindow::onATReset()
         QMessageBox::warning(this, "错误", "USB串口未打开，请先打开外设");
         return;
     }
+    // 停止OCR采集
+    if (m_ocrCollecting)
+    {
+        m_ocrCollecting = false;
+        m_ocrTimer->stop();
+        appendLogUSB(QString("OCR采集已停止，共 %1 条数据")
+                         .arg(m_monitorDataList.size()));
+    }
+
+    // 停止定时器
+    // 停止状态更新定时器
+    m_statusTimer->stop();
+
+    // 最终更新一次状态栏
+    int elapsedSecs = m_collectStartTime.secsTo(QDateTime::currentDateTime());
+
+    ui->lblStatusUSB->setText(QString("接收时长: %1 秒 | 接收帧数: %2 帧")
+                                  .arg(elapsedSecs)
+                                  .arg(m_savedFrameCount));
 
     // 先停止接收线程
     if (m_usbReceiver) {
@@ -411,8 +581,6 @@ void MainWindow::onATReset()
         m_usbReceiver = nullptr;
         appendLogUSB("USB接收线程已停止");
     }
-
-    int elapsedSecs = m_collectStartTime.secsTo(QDateTime::currentDateTime());
 
     appendLogUSB(QString("采集完成：共 %1 帧，历时 %2 秒")
                      .arg(m_savedFrameCount)
@@ -438,6 +606,100 @@ void MainWindow::onATReset()
                                  .arg(m_savedFrameCount)
                                  .arg(elapsedSecs)
                                  .arg(m_saveDir.isEmpty() ? "未保存" : m_saveDir));
+}
+
+void MainWindow::onCameraConnect()
+{
+    const QList<QCameraDevice> cameras = QMediaDevices::videoInputs();
+    if (cameras.isEmpty()) {
+        QMessageBox::warning(this, "错误", "未找到摄像头设备");
+        return;
+    }
+
+    int idx = ui->cmbCamera->currentIndex();
+    if (idx < 0 || idx >= cameras.size()) return;
+
+    // 清理旧的摄像头
+    onCameraDisconnect();
+
+    // 创建摄像头
+    m_camera = new QCamera(cameras[idx], this);
+    m_captureSession = new QMediaCaptureSession(this);
+    m_videoSink = new QVideoSink(this);
+
+    m_captureSession->setCamera(m_camera);
+    m_captureSession->setVideoSink(m_videoSink);
+
+    // 每帧画面到来时更新Label
+    connect(m_videoSink, &QVideoSink::videoFrameChanged,
+            this, &MainWindow::onCameraFrameReady);
+
+    m_camera->start();
+
+    ui->btnCameraConnect->setEnabled(false);
+    ui->btnCameraDisconnect->setEnabled(true);
+    ui->cmbCamera->setEnabled(false);
+    appendLogUSB(QString("摄像头已连接: %1").arg(cameras[idx].description()));
+}
+
+void MainWindow::onCameraDisconnect()
+{
+    // 停止录像，释放资源
+    if (m_mediaRecorder &&
+        m_mediaRecorder->recorderState() == QMediaRecorder::RecordingState) {
+        m_mediaRecorder->stop();
+    }
+    if (m_mediaRecorder) {
+        delete m_mediaRecorder;
+        m_mediaRecorder = nullptr;
+    }
+
+    if (m_camera) {
+        m_camera->stop();
+        delete m_camera;
+        m_camera = nullptr;
+    }
+    if (m_captureSession) {
+        delete m_captureSession;
+        m_captureSession = nullptr;
+    }
+    if (m_videoSink) {
+        delete m_videoSink;
+        m_videoSink = nullptr;
+    }
+
+    ui->labelCamera->setText("摄像头未连接");
+    ui->btnCameraConnect->setEnabled(true);
+    ui->btnCameraDisconnect->setEnabled(false);
+    ui->cmbCamera->setEnabled(true);
+    appendLogUSB("摄像头已断开");
+}
+
+void MainWindow::onCameraSave()
+{
+    if (!m_captureSession) {
+        QMessageBox::warning(this, "错误", "摄像头未连接");
+        return;
+    }
+
+    if (!m_mediaRecorder) {
+        QString fileName = QFileDialog::getSaveFileName(
+            this, "保存录像", "", "视频文件 (*.mp4);;所有文件 (*)");
+        if (fileName.isEmpty()) return;
+
+        m_mediaRecorder = new QMediaRecorder(this);
+        m_captureSession->setRecorder(m_mediaRecorder);
+        m_mediaRecorder->setOutputLocation(QUrl::fromLocalFile(fileName));
+        m_mediaRecorder->record();
+        ui->btnCameraSave->setText("停止录像");
+        appendLogUSB(QString("开始录像: %1").arg(fileName));
+    } else {
+        m_mediaRecorder->stop();
+        delete m_mediaRecorder;
+        m_mediaRecorder = nullptr;
+        ui->btnCameraSave->setText("保存录像");
+        appendLogUSB("录像已停止");
+    }
 }
 
 bool MainWindow::tryTakeOneFrame60(QByteArray& frame)
@@ -573,6 +835,24 @@ void MainWindow::onReadDataUSB()
 
 }
 
+void MainWindow::onCameraFrameReady(const QVideoFrame& frame)
+{
+    if (!frame.isValid()) return;
+
+    QImage img = frame.toImage();
+    if (img.isNull()) return;
+
+    // 保存当前帧供OCR使用
+    m_currentFrame = img;
+
+    QPixmap pix = QPixmap::fromImage(img).scaled(
+        ui->labelCamera->size(),
+        Qt::KeepAspectRatio,
+        Qt::SmoothTransformation);
+
+    ui->labelCamera->setPixmap(pix);
+}
+
 void MainWindow::onSendData()
 {
     const QString text = ui->txtSend->toPlainText();
@@ -634,14 +914,6 @@ void MainWindow::onSendData()
     }
 }
 
-//图像相关处理函数
-void MainWindow::updateCharts()
-{
-    if (!currentRadar || currentRadar->data_count == 0) return;
-
-    plotFFTSpectrum(currentRadar->complex_data, currentRadar->fft_points);
-}
-
 //生命体征处理
 void MainWindow::processVitalSigns()
 {
@@ -664,6 +936,14 @@ void MainWindow::processVitalSigns()
         breathingLCD->display(static_cast<int>(detector->getBreathingRate()));
         heartrateLCD->display(static_cast<int>(detector->getHeartRate()));
     }
+}
+
+// FFT谱可视化
+void MainWindow::updateCharts()
+{
+    if (!currentRadar || currentRadar->data_count == 0) return;
+
+    plotFFTSpectrum(currentRadar->complex_data, currentRadar->fft_points);
 }
 
 void MainWindow::plotFFTSpectrum(const int16_t *complex_data, int fft_points)
@@ -742,12 +1022,66 @@ void MainWindow::onSaveData()
     }
 }
 
+//创建图表相关函数
+void MainWindow::setupCharts()
+{
+    // FFT图表
+    chartFFT = std::make_unique<QChart>();
+    chartFFT->setTitle("FFT频谱");
+    chartFFT->setAnimationOptions(QChart::SeriesAnimations);
+    chartFFT->legend()->hide();  // 隐藏FFT图表图例
+
+    // chartViewFFT = std::make_unique<QChartView>(chartFFT.get(), this);
+    // chartViewFFT->setRenderHint(QPainter::Antialiasing);
+    // chartViewFFT->resize(800, 400);  // 设置大小
+    // //chartViewFFT->move(10, 10);      // 设置位置
+    // chartViewFFT->show();
+
+    // 如果UI中有 chartViewFFT 控件，设置图表
+    if (ui->chartViewFFT) {
+        ui->chartViewFFT->setChart(chartFFT.get());
+        ui->chartViewFFT->setRenderHint(QPainter::Antialiasing);
+    }
+
+    // 相位谱图表
+    // chartPhase = std::make_unique<QChart>();
+    // chartPhase->setTitle("相位谱");
+    // chartPhase->setAnimationOptions(QChart::SeriesAnimations);
+
+    // auto chartViewPhase = new QChartView(chartPhase.get(), this);
+    // chartViewPhase->setRenderHint(QPainter::Antialiasing);
+}
+
+void MainWindow::setupVitalSignUI()
+{
+    //创建LCD
+    breathingLCD = ui->breathingLCD;
+    breathingLCD->setDigitCount(3);
+    breathingLCD->setSegmentStyle(QLCDNumber::Flat);
+    breathingLCD->display(0);
+
+    heartrateLCD = ui->heartrateLCD;
+    heartrateLCD->setDigitCount(3);
+    heartrateLCD->setSegmentStyle(QLCDNumber::Flat);
+    heartrateLCD->display(0);
+
+    //创建连接
+    //connect(detector, &VitalSignsDetector::)
+
+}
+
 void MainWindow::onSaveDataUSB()
 {
     QString dir = QFileDialog::getExistingDirectory(this, "选择数据保存目录");
     if (dir.isEmpty()) return;
 
-    m_saveDir = dir;
+    m_saveDir = dir + "/Data";
+    // 自动创建Data文件夹
+    QDir dataDir;
+    if (!dataDir.exists(m_saveDir)) {
+        dataDir.mkpath(m_saveDir);
+    }
+
     appendLogUSB(QString("保存路径已设置: %1").arg(m_saveDir));
 }
 
@@ -846,54 +1180,6 @@ void MainWindow::onOpenDatFile()
     free_radar_data(radar);
 }
 
-//创建图表相关函数
-void MainWindow::setupCharts()
-{
-    // FFT图表
-    chartFFT = std::make_unique<QChart>();
-    chartFFT->setTitle("FFT频谱");
-    chartFFT->setAnimationOptions(QChart::SeriesAnimations);
-    chartFFT->legend()->hide();  // 隐藏FFT图表图例
-
-    // chartViewFFT = std::make_unique<QChartView>(chartFFT.get(), this);
-    // chartViewFFT->setRenderHint(QPainter::Antialiasing);
-    // chartViewFFT->resize(800, 400);  // 设置大小
-    // //chartViewFFT->move(10, 10);      // 设置位置
-    // chartViewFFT->show();
-
-    // 如果UI中有 chartViewFFT 控件，设置图表
-    if (ui->chartViewFFT) {
-        ui->chartViewFFT->setChart(chartFFT.get());
-        ui->chartViewFFT->setRenderHint(QPainter::Antialiasing);
-    }
-
-    // 相位谱图表
-    // chartPhase = std::make_unique<QChart>();
-    // chartPhase->setTitle("相位谱");
-    // chartPhase->setAnimationOptions(QChart::SeriesAnimations);
-
-    // auto chartViewPhase = new QChartView(chartPhase.get(), this);
-    // chartViewPhase->setRenderHint(QPainter::Antialiasing);
-}
-
-void MainWindow::setupVitalSignUI()
-{
-    //创建LCD
-    breathingLCD = ui->breathingLCD;
-    breathingLCD->setDigitCount(3);
-    breathingLCD->setSegmentStyle(QLCDNumber::Flat);
-    breathingLCD->display(0);
-
-    heartrateLCD = ui->heartrateLCD;
-    heartrateLCD->setDigitCount(3);
-    heartrateLCD->setSegmentStyle(QLCDNumber::Flat);
-    heartrateLCD->display(0);
-
-    //创建连接
-    //connect(detector, &VitalSignsDetector::)
-
-}
-
 void MainWindow::onDisplayModeChanged()
 {
     if (ui->rbtnText->isChecked()) {
@@ -924,4 +1210,152 @@ void MainWindow::appendLogUSB(const QString &text)
 {
     QString timestamp = QDateTime::currentDateTime().toString("hh:mm:ss");
     ui->textReceiverUSB->append(QString("[%1][USB] %2").arg(timestamp, text));
+}
+
+
+// ============================================================
+// 数字识别
+// ============================================================
+void MainWindow::onOpenCV()
+{
+    if (!m_ocr || !m_ocr->isReady()) {
+        QMessageBox::warning(this, "错误", "OCR引擎未初始化");
+        return;
+    }
+    m_ocrEnabled = true;
+    ui->btnOpenCV->setEnabled(false);
+    ui->btnCloseCV->setEnabled(true);
+    appendLogUSB("数字识别已开启，等待采集开始...");
+}
+
+void MainWindow::onCloseCV()
+{
+    m_ocrEnabled    = false;
+    m_ocrCollecting = false;
+    if (m_ocrTimer) m_ocrTimer->stop();
+    ui->btnOpenCV->setEnabled(true);
+    ui->btnCloseCV->setEnabled(false);
+    appendLogUSB("数字识别已关闭");
+}
+
+void MainWindow::onOcrTimerTimeout()
+{
+    if (!m_ocrEnabled || !m_ocrCollecting) return;
+    if (m_currentFrame.isNull() || !m_ocr) return;
+    processMonitorFrame(m_currentFrame);
+}
+
+// 框选实现函数
+void MainWindow::onSelectHRRect()
+{
+    ui->labelCamera->setSelectMode(CameraLabel::SelectHR);
+    appendLogUSB("请在画面上拖拽框选心率数字区域...");
+}
+
+void MainWindow::onSelectRRRect()
+{
+    ui->labelCamera->setSelectMode(CameraLabel::SelectRR);
+    appendLogUSB("请在画面上拖拽框选呼吸率数字区域...");
+}
+
+void MainWindow::onClearRects()
+{
+    ui->labelCamera->clearRects();
+    appendLogUSB("已清除所有框选区域");
+}
+
+void MainWindow::processMonitorFrame(const QImage& frame)
+{
+    if (frame.isNull() || !m_ocr) return;
+
+    // 获取labelCamera上的框选区域
+    QRect hrLabelRect = ui->labelCamera->getHRRect();
+    QRect rrLabelRect = ui->labelCamera->getRRRect();
+
+    MonitorData data;
+    data.timestamp = QDateTime::currentDateTime();
+
+    // labelCamera显示的是缩放后的图像，需要把Label坐标映射回原图坐标
+    QSize labelSize  = ui->labelCamera->size();
+    QSize imageSize  = frame.size();
+
+    auto mapToImage = [&](const QRect& labelRect) -> QRect {
+        if (labelRect.isNull()) return QRect();
+        double scaleX = static_cast<double>(imageSize.width())  / labelSize.width();
+        double scaleY = static_cast<double>(imageSize.height()) / labelSize.height();
+        return QRect(
+                   static_cast<int>(labelRect.x()      * scaleX),
+                   static_cast<int>(labelRect.y()      * scaleY),
+                   static_cast<int>(labelRect.width()  * scaleX),
+                   static_cast<int>(labelRect.height() * scaleY)
+                   ).intersected(frame.rect());
+    };
+
+    // 识别心率
+    QRect hrImageRect = mapToImage(hrLabelRect);
+    if (!hrImageRect.isNull()) {
+        QImage hrROI = frame.copy(hrImageRect);
+        data.heartRate = recognizeROI(hrROI);
+    } else {
+        data.heartRate = "0";  // 未框选显示0
+    }
+
+    // 识别呼吸率
+    QRect rrImageRect = mapToImage(rrLabelRect);
+    if (!rrImageRect.isNull()) {
+        QImage rrROI = frame.copy(rrImageRect);
+        data.respRate = recognizeROI(rrROI);
+    } else {
+        data.respRate = "0";  // 未框选显示0
+    }
+
+    m_monitorDataList.append(data);
+    appendLogUSB(QString("[识别] %1 心率:%2 呼吸:%3")
+                     .arg(data.timestamp.toString("hh:mm:ss.zzz"))
+                     .arg(data.heartRate)
+                     .arg(data.respRate));
+}
+
+QString MainWindow::recognizeROI(const QImage& roi)
+{
+    if (roi.isNull() || !m_ocr) return QString();
+    return m_ocr->recognizeDigits(roi);
+}
+
+void MainWindow::onSaveLabel()
+{
+    if (m_monitorDataList.isEmpty()) {
+        QMessageBox::warning(this, "提示", "没有可保存的识别数据");
+        return;
+    }
+
+    // 从m_saveDir（Data子目录）推算根目录
+    QDir dataDir(m_saveDir);
+    dataDir.cdUp();  // 返回上一级，即用户选择的根目录
+    QString rootDir = dataDir.absolutePath();
+
+    QString fileName = rootDir + "/label_data.csv";
+
+    QFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, "错误", "无法创建文件");
+        return;
+    }
+
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << "时间戳,心率(HR),呼吸率(RR)\n";
+
+    for (const MonitorData& data : m_monitorDataList) {
+        out << data.timestamp.toString("yyyy-MM-dd hh:mm:ss.zzz")
+        << "," << data.heartRate
+        << "," << data.respRate
+        << "\n";
+    }
+
+    file.close();
+    QMessageBox::information(this, "成功",
+                             QString("已保存 %1 条数据到:\n%2")
+                                 .arg(m_monitorDataList.size()).arg(fileName));
+    appendLogUSB(QString("标签数据已保存: %1").arg(fileName));
 }

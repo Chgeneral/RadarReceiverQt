@@ -10,16 +10,23 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+set(CMAKE_TOOLCHAIN_FILE "C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
+    CACHE STRING "Vcpkg toolchain file")
+
 find_package(Qt6 6.5 REQUIRED COMPONENTS
     Core
     Gui
     Widgets
     SerialPort
     Charts
+    Multimedia
+    MultimediaWidgets
 )
 
 #DSP库路径
 set(CMSIS_DSP_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMSIS_DSP/" CACHE PATH "CMSIS-DSP library path")
+
+
 
 # 添加CMSIS-DSP源文件
 file(GLOB CMSIS_DSP_SOURCES
@@ -42,6 +49,8 @@ list(REMOVE_ITEM CMSIS_DSP_SOURCES
     "${CMSIS_DSP_PATH}/Source/TransformFunctions/TransformFunctions.c"
 )
 
+set(VCPKG_DIR "C:/vcpkg/installed/x64-windows")
+
 qt_standard_project_setup()
 
 qt_add_executable(RadarDataReceiver
@@ -57,6 +66,10 @@ qt_add_executable(RadarDataReceiver
     UsbReceiver.h
     UsbReceiver.cpp
     ${CMSIS_DSP_SOURCES}
+    CameraLabel.h
+    CameraLabel.cpp
+    OcrWrapper.h
+    OcrWrapper.cpp
 
 )
 
@@ -68,10 +81,10 @@ target_include_directories(RadarDataReceiver PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/usb3p0 #添加库文件路径
 )
 
-link_directories(${CMAKE_CURRENT_SOURCE_DIR}/usb3p0)
-
-# 添加源文件到目标（确保只添加一次）
-target_sources(RadarDataReceiver PRIVATE ${CMSIS_DSP_SOURCES})
+link_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/usb3p0
+    ${VCPKG_DIR}/lib
+)
 
 target_link_libraries(RadarDataReceiver
     PRIVATE
@@ -83,6 +96,8 @@ target_link_libraries(RadarDataReceiver
         ${CMAKE_CURRENT_SOURCE_DIR}/usb3p0/CyAPI.lib
         SetupAPI
         legacy_stdio_definitions
+        Qt::Multimedia
+        Qt::MultimediaWidgets
 )
 
 include(GNUInstallDirs)
